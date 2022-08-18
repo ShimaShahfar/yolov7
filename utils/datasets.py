@@ -7,6 +7,7 @@ import os
 import random
 import shutil
 import time
+import json
 from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
@@ -14,8 +15,10 @@ from threading import Thread
 
 import cv2
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
+
 from PIL import Image, ExifTags
 from torch.utils.data import Dataset
 from tqdm import tqdm
@@ -25,6 +28,7 @@ from copy import deepcopy
 #from pycocotools import mask as maskUtils
 from torchvision.utils import save_image
 from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
+import torchvision.transforms as transforms
 
 from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
     resample_segments, clean_str
@@ -349,9 +353,125 @@ def img2label_paths(img_paths):
     sa, sb = os.sep + 'images' + os.sep, os.sep + 'labels' + os.sep  # /images/, /labels/ substrings
     return ['txt'.join(x.replace(sa, sb, 1).rsplit(x.split('.')[-1], 1)) for x in img_paths]
 
+class Planitar(Dataset):
+    def __init__(self, root="/data/iGuideObjects/", img_w=1024, img_h=512, num_classes= 39, augment=False, hyp=None, rect=False, image_weights=False,
+                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', transform = None, ignore_label=-1):
+        self.img_w = img_w
+        self.ing_h = img_h
+        self.augment = augment
+        self.hyp = hyp
+        self.train_list = os.path.join(root, 'Lists/iGuideObjects_train_records.csv')
+        self.val_list = os.path.join(root, 'Lists/iGuideObjects_val_records.csv')
+        # path = r'../../../data/**/*.jpg'
+        # self.train_list =  glob.glob(path, recursive=True)
+        
+#         self.train = pd.read_csv(self.train_list)
+
+        self.image_weights = image_weights
+        self.rect = False if image_weights else rect
+        self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
+        self.stride = stride
+        self.path = root
+        self.transform = transform
+        self.num_classes = num_classes
+
+        self.label_mapping = {-1: ignore_label, "door": 0, 
+                              "window": 1, "countertop": 2, 
+                              "mirror": 3, "basin": 4, 
+                              "cabinet": 5, "toilet": 6, 
+                              "fridge": 7, "range": 8, "dishwasher": 9, 
+                              "showerhead": 10, "bathtub": 11, "microwave": 12, 
+                              "sink_double": 13, "sofa": ignore_label, "shower": 15, 
+                              "sink": 16, "bed": ignore_label, "washer": 18, 
+                              "dryer": 19, "fireplace": 20, "oven": 21, 
+                              "cooktop": 22, "sink_double_half": 23, "bathtub_round_end": 24,
+                              "shower_corner_a": 25, "column": 26, "wine": 27, "WD": 28, 
+                              "waterheater": 29, "bathtub_corner": 30, 
+                              "furnace": 31, "column_round": 32, "freezer_chest": 33, 
+                              "shower_corner_r": 34, "bidet": 35,
+                              "urinal": 36, "freezer": 37, "sink_corner": 38, 
+                              "washer2": 18, "dryer2": 19}
+
+        
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        image = self.get_img(idx)
+        labels = self.get_labels(idx)
+
+        image_transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+            ]
+        )
+
+        image = image_transform(image)
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        return image, labels
+
+    def __len__(self):
+        return len(self.train_list)
+
+    def get_img(self, idx):
+        image = Image.open(self.train_list[idx]).convert("RGB")
+        return image
+    
+    
+    def get_labels(self, idx):
+        label_path = os.path.splitext(self.train_list[idx])[0] + ".json"
+        labels = []
+        
+        with open(label_path, 'r') as f:
+            annotations = json.load(f)
+
+        for obj in annotations["shapes"]:
+            label = obj["label"]
+            if label =='wd': label = 'WD'
+            if label =='wd2': label = 'WD2'
+                
+            label = self.convert_label([label])
+
+            if len(obj["points"]) != 2:
+                print(f'Annotation Error: {label_path} - {label}')
+                continue
+                
+            x1, y1, x2, y2, w, h = self.get_points(obj["points"][0], obj["points"][1])
+            
+            labels.append([label, x1, y1, x2, y2, w, h])
+            
+        return labels
+
+    def get_points(self, p1, p2):
+        p1_x, p1_y = p1
+        p2_x, p2_y = p2
+        
+        x1, x2 = round(min(p1_x, p2_x)), round(max(p1_x, p2_x))
+        y1, y2 = round(min(p1_y, p2_y)), round(max(p1_y, p2_y))
+        width, height = abs(x2 - x1), abs(y2 - y1)
+        
+        return x1, y1, x2, y2, width, height 
+    
+    def convert_label(self, label, inverse=False):
+        if len(label) == 1:
+            return self.label_mapping[label[0]]
+        else:
+            new_label = torch.zeros_like(label)
+            if inverse:
+                for v, k in self.label_mapping.items():
+                    new_label[label == k] = v
+            else:
+                for k, v in self.label_mapping.items():
+                    new_label[label == k] = v
+            return new_label
+
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
-    def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
+    def __init__(self, path, img_size=1024, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
                  cache_images=False, single_cls=False, stride=32, pad=0.0, prefix=''):
         self.img_size = img_size
         self.augment = augment
