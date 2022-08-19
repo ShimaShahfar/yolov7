@@ -1,0 +1,50 @@
+train: /data/iGuideObjects/Lists/iGuideObjects_YOLO_training_list.csv
+val: /data/iGuideObjects/Lists/iGuideObjects_YOLO_val_list.csv
+# test: ./coco/test-dev2017.txt  # No test samples for now!
+
+# number of classes
+nc: 39
+
+# class names
+names: [     "door",
+            "window",
+            "countertop",
+            "mirror",
+            "basin",
+            "cabinet",
+            "toilet",
+            "fridge",
+            "range",
+            "dishwasher",
+            "showerhead",
+            "bathtub",
+            "microwave",
+            "sink_double",
+            "shower",
+            "sink",
+            "washer",
+            "dryer",
+            "fireplace",
+            "oven",
+            "cooktop",
+            "sink_double_half",
+            "bathtub_round_end",
+            "shower_corner_a",
+            "column",
+            "wine",
+            "WD",
+            "waterheater",
+            "bathtub_corner",
+            "furnace",
+            "column_round",
+            "freezer_chest",
+            "shower_corner_r",
+            "bidet",
+            "urinal",
+            "freezer",
+            "sink_corner",
+            "washer2",
+            "dryer2",
+            ]
+
+
